@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 // SwiftPM executables start life as a plain command-line process, so the app
 // has to promote itself to a regular GUI app before any window will show.
@@ -18,12 +19,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         preview.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+        // Check the grant before showing a selection overlay the user would
+        // only get to drag around before being told it can't capture.
+        guard ScreenRecordingPermission.request() else {
+            // The app is listed in TCC but this build isn't recognised, which
+            // on an ad-hoc signature means it was recompiled since the grant.
+            ScreenRecordingPermission.presentHelp(
+                rebuiltSinceGrant: CGPreflightScreenCaptureAccess() == false)
+            NSApp.terminate(nil)
+            return
+        }
+
         // Jump straight into region selection - that's the first thing anyone
         // launching this wants to do.
         DispatchQueue.main.async { preview.selectRegion() }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // Deliberately false: the preview window is ordered out while the region
+    // selection overlay is up, so "no visible windows" is a normal state.
+    // The preview window's delegate terminates the app when it actually closes.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 let app = NSApplication.shared

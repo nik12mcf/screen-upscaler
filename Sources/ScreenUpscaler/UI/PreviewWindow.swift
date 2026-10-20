@@ -34,12 +34,14 @@ final class PreviewWindowController: NSWindowController {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "Screen Upscaler"
+        window.isReleasedWhenClosed = false
         window.center()
         window.setFrameAutosaveName("PreviewWindow")
         super.init(window: window)
 
         buildUI()
         wireCapture()
+        window.delegate = self
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -164,6 +166,10 @@ final class PreviewWindowController: NSWindowController {
         _ = selection
     }
 
+    fileprivate func terminateFromWindowClose() {
+        Task { try? await capture.stop(); NSApp.terminate(nil) }
+    }
+
     private func presentPermissionHintIfNeeded() {
         let alert = NSAlert()
         alert.messageText = "Screen Recording permission needed"
@@ -178,5 +184,12 @@ final class PreviewWindowController: NSWindowController {
            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+
+extension PreviewWindowController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        terminateFromWindowClose()
     }
 }

@@ -31,8 +31,10 @@ final class RegionSelector {
     }
 
     private func finish(screen: NSScreen, rect: NSRect?) {
-        windows.forEach { $0.close() }
+        // Unwind out of the view's own mouseUp before tearing its window down.
+        let toClose = windows
         windows.removeAll()
+        DispatchQueue.main.async { toClose.forEach { $0.orderOut(nil) } }
 
         guard let rect, rect.width >= 16, rect.height >= 16 else {
             completion?(nil); completion = nil; return
@@ -61,6 +63,10 @@ private final class SelectionWindow: NSWindow {
                    backing: .buffered,
                    defer: false)
         setFrame(screen.frame, display: false)
+        // Programmatic NSWindows default to releasing themselves on close.
+        // We also hold them in an array, so leaving this true double-releases
+        // the window and segfaults inside the next CoreAnimation commit.
+        isReleasedWhenClosed = false
         isOpaque = false
         backgroundColor = .clear
         level = .screenSaver

@@ -1,8 +1,19 @@
 APP      := ScreenUpscaler
 BUNDLE   := dist/$(APP).app
 CONFIG   ?= release
+CERT_NAME := ScreenUpscaler Dev
 
-.PHONY: all build bundle run clean
+# TCC identifies an app by its code signature. Ad-hoc signatures ("-") are
+# identified by a hash of the binary, which changes on every rebuild - so the
+# Screen Recording grant is lost each time you recompile. A self-signed
+# certificate gives a stable identity that survives rebuilds.
+SIGN_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | \
+             grep -o '"$(CERT_NAME)"' | head -1 | tr -d '"' || true)
+ifeq ($(strip $(SIGN_ID)),)
+SIGN_ID := -
+endif
+
+.PHONY: all build bundle run clean cert
 
 all: bundle
 
@@ -17,8 +28,13 @@ bundle: build
 	@mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	@cp Resources/Info.plist $(BUNDLE)/Contents/Info.plist
 	@cp .build/$(CONFIG)/$(APP) $(BUNDLE)/Contents/MacOS/$(APP)
-	@codesign --force --deep --sign - $(BUNDLE) 2>/dev/null || \
-		echo "note: ad-hoc signing unavailable; permissions may reset between builds"
+	@codesign --force --deep --sign $(SIGN_ID) $(BUNDLE) 2>/dev/null && \
+		echo "signed with: $(SIGN_ID)" || \
+		echo "warning: signing failed"
+	@if [ "$(SIGN_ID)" = "-" ]; then \
+		echo "note: ad-hoc signed - macOS will drop Screen Recording permission"; \
+		echo "      on every rebuild. Run 'make cert' once to fix this."; \
+	fi
 	@echo "built $(BUNDLE)"
 
 run: bundle
@@ -26,3 +42,13 @@ run: bundle
 
 clean:
 	rm -rf .build dist
+
+# One-time setup: create a self-signed code-signing certificate so Screen
+# Recording permission survives rebuilds. Prompts for your login password.
+cert:
+	@scripts/make-signing-cert.sh "$(CERT_NAME)"
+
+# Forget the Screen Recording grant for this bundle id, so the next launch
+# prompts cleanly instead of silently matching a stale entry.
+reset-permission:
+	tccutil reset ScreenCapture io.jeffersonst.screenupscaler

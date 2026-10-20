@@ -30,11 +30,35 @@ The app must run from the generated `.app` bundle. macOS keys Screen Recording
 permission to a bundle identifier, so a bare SwiftPM binary will never be
 granted access — `make` handles the bundling for you.
 
-### First launch
+### First launch — do this once
 
-macOS will ask for Screen Recording permission. Grant it under
-**System Settings → Privacy & Security → Screen & System Audio Recording**,
-then launch again. The app detects the denial and offers to open that pane.
+```bash
+make cert      # one-time: creates a stable signing identity (asks for your password)
+make run
+```
+
+Grant Screen Recording when prompted, then launch again — macOS only applies a
+new grant to a freshly started process.
+
+**Why `make cert` matters.** macOS ties Screen Recording permission to an app's
+code signature. Without a certificate the build is *ad-hoc* signed, which means
+macOS identifies it by a hash of the binary — and that hash changes every time
+you recompile. The app stays checked in System Settings while the permission
+silently stops applying, so you get "permission denied" on an app you can see
+is allowed. `make cert` creates a self-signed certificate that gives the app a
+stable identity, and the grant then survives rebuilds.
+
+If permission ever gets into a confused state:
+
+```bash
+make reset-permission   # forget the grant for this bundle id
+make run                # prompts cleanly again
+```
+
+**Always launch with `make run` or `open`, never the binary directly.** Running
+`dist/ScreenUpscaler.app/Contents/MacOS/ScreenUpscaler` from a shell makes macOS
+attribute the capture request to your terminal rather than to the app, and the
+grant won't match.
 
 ## Using it
 
@@ -53,13 +77,17 @@ Sources/ScreenUpscaler/
 ├── main.swift                    NSApplication bootstrap + menu
 ├── Capture/
 │   ├── RegionSelector.swift      drag-to-select overlay, coordinate conversion
-│   └── ScreenCapture.swift       SCStream wrapper, emits CVPixelBuffers
+│   ├── ScreenCapture.swift       SCStream wrapper, emits CVPixelBuffers
+│   └── ScreenRecordingPermission.swift   TCC preflight + the stale-grant case
 ├── Upscale/
 │   └── Upscaler.swift            Upscaler protocol, MetalFX + bilinear baseline
 ├── Render/
 │   └── PreviewRenderer.swift     texture cache, GPU pipeline, fps accounting
 └── UI/
     └── PreviewWindow.swift       preview window, toolbar, capture lifecycle
+
+scripts/
+└── make-signing-cert.sh          one-time self-signed code-signing identity
 ```
 
 ## Design notes
@@ -82,6 +110,13 @@ blit is one cheap on-GPU copy that avoids a class of intermittent failures.
 nothing. ScreenCaptureKit also emits `.idle` frames when nothing changed; those
 are dropped in `ScreenCapture`.
 
+**Windows opt out of `isReleasedWhenClosed`.** Programmatic `NSWindow`s release
+themselves on close. The selection overlays are also held in an array, so
+leaving the default on double-releases them and segfaults inside the next
+CoreAnimation commit. Related: the app does *not* quit when the last window
+closes, because the preview window is deliberately hidden while the overlay is
+up — it quits when the preview window itself closes.
+
 **The upscaler is behind a protocol.** `MetalFXUpscaler` is the default and
 `BilinearUpscaler` is a deliberate baseline — switch between them to see what
 MetalFX is actually buying you on your content.
@@ -93,6 +128,8 @@ MetalFX is actually buying you on your content.
   which screen capture doesn't provide. Spatial is the correct choice here.
 - **Scale factor changes restart the stream.** Cheap, but it blinks.
 - **No multi-display region spanning.** A selection must sit on one display.
+- **Ad-hoc signing without `make cert`.** Permission is lost on every rebuild.
+  See "First launch" above.
 - **Swift 5 language mode.** `Package.swift` pins `.v5` so the capture callback
   can hand frames across threads without actor ceremony. Moving to `.v6` means
   making the frame handoff properly `Sendable` — a good first refactor.
