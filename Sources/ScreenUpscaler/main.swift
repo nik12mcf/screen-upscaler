@@ -5,6 +5,7 @@ import CoreGraphics
 // has to promote itself to a regular GUI app before any window will show.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var preview: PreviewWindowController?
+    private var controlBar: ControlBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let preview = PreviewWindowController.make() else {
@@ -16,28 +17,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         self.preview = preview
-        preview.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         // Check the grant before showing a selection overlay the user would
         // only get to drag around before being told it can't capture.
         guard ScreenRecordingPermission.request() else {
-            // The app is listed in TCC but this build isn't recognised, which
-            // on an ad-hoc signature means it was recompiled since the grant.
+            // Only blame the signature when it really is ad-hoc - with a stable
+            // certificate a missing grant just means it hasn't been given yet.
             ScreenRecordingPermission.presentHelp(
-                rebuiltSinceGrant: CGPreflightScreenCaptureAccess() == false)
+                rebuiltSinceGrant: ScreenRecordingPermission.isAdHocSigned)
             NSApp.terminate(nil)
             return
         }
 
-        // Jump straight into region selection - that's the first thing anyone
-        // launching this wants to do.
-        DispatchQueue.main.async { preview.selectRegion() }
+        // The control bar is the app's home; the live preview opens from it.
+        let bar = ControlBarController(preview: preview)
+        controlBar = bar
+        bar.show()
     }
 
-    // Deliberately false: the preview window is ordered out while the region
-    // selection overlay is up, so "no visible windows" is a normal state.
-    // The preview window's delegate terminates the app when it actually closes.
+    // The control bar is a panel, and the preview window comes and goes, so
+    // quitting is explicit (⌘Q) rather than tied to the last window closing.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
@@ -53,6 +53,7 @@ private func buildMenu() {
     let appItem = NSMenuItem()
     let appMenu = NSMenu()
     appMenu.addItem(withTitle: "Select Region…", action: #selector(PreviewWindowController.selectRegion), keyEquivalent: "r")
+    appMenu.addItem(withTitle: "Set fal.ai API Key…", action: #selector(ControlBarController.promptForKey), keyEquivalent: "")
     appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "Quit Screen Upscaler", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu

@@ -25,8 +25,14 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private(set) var pixelSize: (width: Int, height: Int) = (0, 0)
 
-    func start(selection: RegionSelector.Selection, fps: Int = 60) async throws {
+    /// `maxDimension` caps the captured size per side, letting ScreenCaptureKit
+    /// downscale large regions to fit what the upscaler accepts.
+    func start(selection: RegionSelector.Selection, fps: Int? = nil,
+               maxDimension: Int? = nil) async throws {
         try await stop()
+        // Default to the display's refresh rate (120 on ProMotion) - capturing
+        // faster than the screen redraws only yields duplicate frames.
+        let fps = fps ?? max(selection.screen.maximumFramesPerSecond, 60)
 
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
@@ -43,8 +49,16 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.sourceRect = selection.sourceRect
         // Capture at native pixel density, not points, or we throw away the
         // very detail the upscaler is supposed to work from.
-        config.width  = Int((selection.sourceRect.width  * scale).rounded())
-        config.height = Int((selection.sourceRect.height * scale).rounded())
+        var width  = selection.sourceRect.width  * scale
+        var height = selection.sourceRect.height * scale
+        if let maxDimension, max(width, height) > CGFloat(maxDimension) {
+            let fit = CGFloat(maxDimension) / max(width, height)
+            width *= fit
+            height *= fit
+        }
+        // Even sizes, since 4:2:0 chroma covers 2x2 pixel blocks.
+        config.width  = max(2, Int(width)  & ~1)
+        config.height = max(2, Int(height) & ~1)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.colorSpaceName = CGColorSpace.sRGB
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))

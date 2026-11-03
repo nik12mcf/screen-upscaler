@@ -5,11 +5,11 @@ import QuartzCore
 
 /// Owns the GPU side of the pipeline:
 ///
-///   CVPixelBuffer -> (texture cache) -> blit -> MetalFX -> draw to drawable
+///   CVPixelBuffer -> (texture cache) -> blit -> upscaler -> draw to drawable
 ///
 /// The blit into a private texture exists because textures vended by
 /// CVMetalTextureCache don't advertise the usage flags MetalFX wants. It's one
-/// cheap on-GPU copy and it keeps the scaler happy.
+/// cheap on-GPU copy and it keeps the scalers happy.
 final class PreviewRenderer: NSObject, MTKViewDelegate {
 
     private let device: MTLDevice
@@ -25,6 +25,11 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     /// Latest frame from the capture thread. Guarded by `frameLock`.
     private var pendingBuffer: CVPixelBuffer?
     private let frameLock = NSLock()
+
+    /// Real-ESRGAN runs through Core ML, not a Metal command buffer, so it
+    /// happens in `submit` on the capture thread and the renderer just shows
+    /// its 4x output. Guarded by `frameLock`.
+    private var esrganPool: CVPixelBufferPool?
 
     private(set) var fps: Double = 0
     private var frameCount = 0
@@ -44,13 +49,43 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     // MARK: Configuration
 
     /// Point the renderer at a new capture size / scale factor.
-    func configure(inputWidth: Int, inputHeight: Int, scale: Int) {
+    func configure(inputWidth: Int, inputHeight: Int, scale: Int, mode: UpscaleMode) {
+        var inputWidth = inputWidth, inputHeight = inputHeight
+        var scale = scale
+        var esrgan: CVPixelBufferPool?
+        if mode == .realESRGAN, RealESRGAN.fast != nil {
+            esrgan = RealESRGAN.makePool(width: inputWidth * RealESRGAN.scale,
+                                         height: inputHeight * RealESRGAN.scale)
+        }
+        frameLock.lock()
+        esrganPool = esrgan
+        pendingBuffer = nil
+        frameLock.unlock()
+        if esrgan != nil {
+            // Frames arrive already 4x; just display them.
+            inputWidth *= RealESRGAN.scale
+            inputHeight *= RealESRGAN.scale
+            scale = 1
+        }
         let outW = inputWidth * scale
         let outH = inputHeight * scale
 
-        upscaler = MetalFXUpscaler(device: device,
-                                   inputWidth: inputWidth, inputHeight: inputHeight,
-                                   outputWidth: outW, outputHeight: outH)
+        var chosen: Upscaler?
+        if esrgan != nil {
+            chosen = PassthroughUpscaler(name: "Real-ESRGAN 4x",
+                                         width: inputWidth, height: inputHeight)
+        }
+        if chosen == nil, mode == .aiEnhance, #available(macOS 26.0, *) {
+            chosen = AIEnhanceUpscaler(device: device,
+                                       inputWidth: inputWidth, inputHeight: inputHeight,
+                                       outputWidth: outW, outputHeight: outH)
+        }
+        if chosen == nil, mode != .bilinear {
+            chosen = MetalFXUpscaler(device: device,
+                                     inputWidth: inputWidth, inputHeight: inputHeight,
+                                     outputWidth: outW, outputHeight: outH)
+        }
+        upscaler = chosen
             ?? BilinearUpscaler(inputWidth: inputWidth, inputHeight: inputHeight,
                                 outputWidth: outW, outputHeight: outH)
 
@@ -60,9 +95,24 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
                                     usage: [.shaderRead, .shaderWrite, .renderTarget])
     }
 
+    /// Called on the capture thread. With Real-ESRGAN this blocks for the
+    /// model's run, so ScreenCaptureKit simply drops frames it can't keep up with.
     func submit(buffer: CVPixelBuffer) {
         frameLock.lock()
-        pendingBuffer = buffer
+        let pool = esrganPool
+        frameLock.unlock()
+
+        var frame = buffer
+        if let pool, let model = RealESRGAN.fast {
+            var out: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
+            guard let out, (try? model.upscale(buffer, into: out)) != nil else { return }
+            frame = out
+        }
+
+        frameLock.lock()
+        // Drop the result if the region/mode changed while the model ran.
+        if pool == nil || esrganPool === pool { pendingBuffer = frame }
         frameLock.unlock()
     }
 

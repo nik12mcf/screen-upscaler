@@ -34,11 +34,17 @@ CNF
 echo "==> generating key and certificate"
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -config "$TMP/ext.cnf" 2>/dev/null
+# OpenSSL 3 defaults to AES/PBKDF2/SHA-256 PKCS#12, which `security import`
+# can't read - it fails with "MAC verification failed (wrong password?)".
+# Force the legacy 3DES/SHA-1 encoding macOS understands, and use a real
+# throwaway password since an empty one is also mishandled.
+P12_PASS="$(openssl rand -hex 16)"
 openssl pkcs12 -export -out "$TMP/cert.p12" \
-    -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -passout pass: 2>/dev/null
+    -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -passout "pass:$P12_PASS" \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 2>/dev/null
 
 echo "==> importing into the login keychain"
-security import "$TMP/cert.p12" -k "$KEYCHAIN" -P "" \
+security import "$TMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASS" \
     -T /usr/bin/codesign -T /usr/bin/security >/dev/null
 
 echo "==> trusting it for code signing (requires your password)"

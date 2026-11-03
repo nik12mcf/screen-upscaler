@@ -1,5 +1,6 @@
 import CoreGraphics
 import AppKit
+import Security
 
 /// Screen Recording permission, checked up front instead of discovered when
 /// `SCStream.startCapture()` fails.
@@ -12,6 +13,22 @@ import AppKit
 enum ScreenRecordingPermission {
 
     static var isGranted: Bool { CGPreflightScreenCaptureAccess() }
+
+    /// True when the running binary has no certificate chain, i.e. it was
+    /// signed with `codesign --sign -` and its identity changes per build.
+    static var isAdHocSigned: Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return true }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+              let staticCode else { return true }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(
+                staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return true }
+        let certs = dict[kSecCodeInfoCertificates as String] as? [Any] ?? []
+        return certs.isEmpty
+    }
 
     /// Triggers the system prompt if the app has never asked before.
     /// Returns the state *after* asking.

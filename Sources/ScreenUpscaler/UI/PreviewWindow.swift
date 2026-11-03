@@ -13,9 +13,14 @@ final class PreviewWindowController: NSWindowController {
     private var metalView: MTKView!
     private var statusLabel: NSTextField!
     private var scalePopup: NSPopUpButton!
+    private var modePopup: NSPopUpButton!
 
     private var selection: RegionSelector.Selection?
     private var scaleFactor = 2
+    private var mode: UpscaleMode = UpscaleMode.allCases.first(where: \.isAvailable) ?? .metalFX
+
+    /// The scale actually applied: the toolbar's, unless the mode is fixed.
+    private var effectiveScale: Int { mode.fixedScale ?? scaleFactor }
 
     /// `NSWindowController.init()` is non-failable, so the "no GPU" case is
     /// handled by this factory rather than a failable initializer.
@@ -55,7 +60,7 @@ final class PreviewWindowController: NSWindowController {
         metalView.colorPixelFormat = .bgra8Unorm
         metalView.framebufferOnly = false
         metalView.delegate = renderer
-        metalView.preferredFramesPerSecond = 60
+        metalView.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 120
         // Only redraw when a frame actually arrives.
         metalView.isPaused = true
         metalView.enableSetNeedsDisplay = false
@@ -72,11 +77,22 @@ final class PreviewWindowController: NSWindowController {
         scalePopup.target = self
         scalePopup.action = #selector(scaleChanged)
 
+        modePopup = NSPopUpButton()
+        for m in UpscaleMode.allCases {
+            modePopup.addItem(withTitle: m.title)
+            modePopup.lastItem?.isEnabled = m.isAvailable
+        }
+        modePopup.autoenablesItems = false
+        modePopup.selectItem(at: mode.rawValue)
+        modePopup.target = self
+        modePopup.action = #selector(modeChanged)
+        scalePopup.isEnabled = mode.fixedScale == nil
+
         statusLabel = NSTextField(labelWithString: "No region selected")
         statusLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
 
-        let toolbar = NSStackView(views: [selectButton, scalePopup, statusLabel])
+        let toolbar = NSStackView(views: [selectButton, modePopup, scalePopup, statusLabel])
         toolbar.orientation = .horizontal
         toolbar.spacing = 12
         toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -126,14 +142,22 @@ final class PreviewWindowController: NSWindowController {
         restartCapture()
     }
 
+    @objc private func modeChanged() {
+        mode = UpscaleMode(rawValue: modePopup.indexOfSelectedItem) ?? .metalFX
+        scalePopup.isEnabled = mode.fixedScale == nil
+        restartCapture()
+    }
+
     private func restartCapture() {
         guard let selection else { return }
         Task { @MainActor in
             do {
-                try await capture.start(selection: selection)
+                try await capture.start(selection: selection,
+                                        maxDimension: mode.maxInputDimension)
                 let (w, h) = capture.pixelSize
-                renderer.configure(inputWidth: w, inputHeight: h, scale: scaleFactor)
-                sizeWindow(toContentWidth: w * scaleFactor, height: h * scaleFactor)
+                renderer.configure(inputWidth: w, inputHeight: h,
+                                   scale: effectiveScale, mode: mode)
+                sizeWindow(toContentWidth: w * effectiveScale, height: h * effectiveScale)
             } catch {
                 statusLabel.stringValue = "Capture failed: \(error.localizedDescription)"
                 presentPermissionHintIfNeeded()
@@ -162,12 +186,12 @@ final class PreviewWindowController: NSWindowController {
         let (w, h) = capture.pixelSize
         statusLabel.stringValue = String(
             format: "%d\u{00d7}%d \u{2192} %d\u{00d7}%d  ·  %@  ·  %.0f fps",
-            w, h, w * scaleFactor, h * scaleFactor, upscaler, fps)
+            w, h, w * effectiveScale, h * effectiveScale, upscaler, fps)
         _ = selection
     }
 
-    fileprivate func terminateFromWindowClose() {
-        Task { try? await capture.stop(); NSApp.terminate(nil) }
+    fileprivate func stopFromWindowClose() {
+        Task { try? await capture.stop() }
     }
 
     private func presentPermissionHintIfNeeded() {
@@ -190,6 +214,6 @@ final class PreviewWindowController: NSWindowController {
 
 extension PreviewWindowController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        terminateFromWindowClose()
+        stopFromWindowClose()
     }
 }
